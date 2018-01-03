@@ -1,9 +1,9 @@
 import datetime
-import queue
-import uuid
 import unittest.mock as mock
+import uuid
 from unittest.mock import Mock, patch
 
+from collections import deque
 from golem_messages import message
 from peewee import DataError, PeeweeException, IntegrityError
 
@@ -54,11 +54,11 @@ class TestMessageHistoryService(DatabaseFixture):
         msg = self._build_msg()
 
         self.service.add(msg)
-        assert self.service._save_queue.get(block=False) is msg
+        assert self.service._save_queue.pop() is msg
 
         self.service.add(None)
-        with self.assertRaises(queue.Empty):
-            self.service._save_queue.get(block=False)
+        with self.assertRaises(IndexError):
+            self.service._save_queue.pop()
 
     @mock.patch('golem.model.NetworkMessage.save')
     def test_add_sync_fail(self, save):
@@ -68,13 +68,13 @@ class TestMessageHistoryService(DatabaseFixture):
         save.side_effect = DataError
 
         self.service.add_sync(msg_dict)
-        assert not self.service._save_queue.put.called
+        assert not self.service._save_queue.appendleft.called
         assert message_count() == 0
 
         save.side_effect = PeeweeException
 
         self.service.add_sync(msg_dict)
-        assert self.service._save_queue.put.called
+        assert self.service._save_queue.appendleft.called
         assert message_count() == 0
 
     def test_add_sync_success(self):
@@ -87,11 +87,11 @@ class TestMessageHistoryService(DatabaseFixture):
         params = dict(subtask=str(uuid.uuid4()))
 
         self.service.remove(task, **params)
-        assert self.service._remove_queue.get(block=False) == (task, params)
+        assert self.service._remove_queue.pop() == (task, params)
 
         self.service.remove(None)
-        with self.assertRaises(queue.Empty):
-            self.service._remove_queue.get(block=False)
+        with self.assertRaises(IndexError):
+            self.service._remove_queue.pop()
 
     def test_remove_sync(self):
         msg = self._build_dict(None, None)
@@ -103,12 +103,12 @@ class TestMessageHistoryService(DatabaseFixture):
 
         with patch('peewee.DeleteQuery.execute', side_effect=DataError):
             self.service.remove_sync(msg['task'])
-            assert not self.service._remove_queue.put.called
+            assert not self.service._remove_queue.appendleft.called
             assert message_count() == 1
 
         with patch('peewee.DeleteQuery.execute', side_effect=PeeweeException):
             self.service.remove_sync(msg['task'])
-            assert self.service._remove_queue.put.called
+            assert self.service._remove_queue.appendleft.called
             assert message_count() == 1
 
         self.service.remove_sync(msg['task'], subtask=str(uuid.uuid4()))
@@ -216,7 +216,7 @@ class TestMessageHistoryService(DatabaseFixture):
 
         # Add message
         msg = self._build_dict()
-        self.service._save_queue.put(msg)
+        self.service._save_queue.appendleft(msg)
 
         # With message
         self.service._loop()
@@ -239,7 +239,7 @@ class TestMessageHistoryService(DatabaseFixture):
         # Add tuple
         task = str(uuid.uuid4())
         props = dict(subtask=str(uuid.uuid4()))
-        self.service._remove_queue.put((task, props))
+        self.service._remove_queue.appendleft((task, props))
 
         # With tuple
         self.service._loop()
@@ -297,24 +297,24 @@ class TestMessageHistoryProvider(DatabaseFixture):
         NetworkMessage.delete().execute()
 
         # Resolve node_id
-        assert service._save_queue.qsize() == 0
+        assert len(service._save_queue) == 0
         provider.react_to_task_to_compute(msg_request)
-        assert service._save_queue.qsize() == 1
+        assert len(service._save_queue) == 1
 
-        service._save_queue = queue.Queue()
+        service._save_queue = deque()
 
         # Also resolve task_id using the interface
-        assert service._save_queue.qsize() == 0
+        assert len(service._save_queue) == 0
         provider.react_to_report_computed_task(msg_result)
-        assert service._save_queue.qsize() == 1
+        assert len(service._save_queue) == 1
 
-        service._save_queue = queue.Queue()
+        service._save_queue = deque()
 
         # Logs an error when model is not available
-        assert service._save_queue.qsize() == 0
+        assert len(service._save_queue) == 0
         provider.message_to_model = Mock(return_value=None)
         provider.react_to_task_to_compute(msg_hello)
-        assert service._save_queue.qsize() == 0
+        assert len(service._save_queue) == 0
 
 
 class TestNetworkMessage(DatabaseFixture):

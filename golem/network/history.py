@@ -1,12 +1,13 @@
 import datetime
 import logging
-import operator
-import queue
 import threading
-from abc import abstractmethod, ABC
-from functools import reduce, wraps
+import time
 from typing import List
 
+import operator
+from abc import abstractmethod, ABC
+from collections import deque
+from functools import reduce, wraps
 from peewee import (PeeweeException, DataError, ProgrammingError,
                     NotSupportedError, Field, IntegrityError)
 
@@ -35,7 +36,7 @@ class MessageHistoryService(IService):
 
     MESSAGE_LIFETIME = datetime.timedelta(days=1)
     SWEEP_INTERVAL = datetime.timedelta(hours=12)
-    QUEUE_TIMEOUT = datetime.timedelta(seconds=2).total_seconds()
+    QUEUE_TIMEOUT = datetime.timedelta(seconds=1.5).total_seconds()
 
     # Decorators (at the end of this file) need to access an instance
     # of MessageHistoryService
@@ -50,8 +51,8 @@ class MessageHistoryService(IService):
         self._thread = None  # set in start
         self._queue_timeout = None  # set in start
         self._stop_event = threading.Event()
-        self._save_queue = queue.Queue()
-        self._remove_queue = queue.Queue()
+        self._save_queue = deque()
+        self._remove_queue = deque()
         self._sweep_ts = datetime.datetime.now()
 
     def run(self) -> None:
@@ -89,7 +90,7 @@ class MessageHistoryService(IService):
         self.instance = None
 
         self._queue_timeout = 0
-        while not self._save_queue.empty():
+        while len(self._save_queue) > 0:
             self._loop()
 
     @classmethod
@@ -114,7 +115,7 @@ class MessageHistoryService(IService):
         :param msg_dict:
         """
         if msg_dict:
-            self._save_queue.put(msg_dict)
+            self._save_queue.appendleft(msg_dict)
 
     def add_sync(self, msg_dict: dict) -> None:
         """
@@ -123,7 +124,8 @@ class MessageHistoryService(IService):
         """
         try:
             msg = NetworkMessage(**msg_dict)
-            msg.save()
+            with NetworkMessage._meta.database.transaction():
+                msg.save()
         except (DataError, ProgrammingError, NotSupportedError,
                 TypeError, IntegrityError) as exc:
             # Unrecoverable error
@@ -132,7 +134,7 @@ class MessageHistoryService(IService):
         except PeeweeException:
             # Temporary error
             logger.warning("Message '%s' save queued", msg_dict.get('msg_cls'))
-            self._save_queue.put(msg_dict)
+            self._save_queue.appendleft(msg_dict)
 
     def remove(self, task: str, **properties) -> None:
         """
@@ -141,7 +143,7 @@ class MessageHistoryService(IService):
         :param task: Task id
         """
         if task:
-            self._remove_queue.put((task, properties))
+            self._remove_queue.appendleft((task, properties))
 
     def remove_sync(self, task: str, **properties) -> None:
         """
@@ -153,9 +155,10 @@ class MessageHistoryService(IService):
         clauses = self.build_clauses(task=task, **properties)
 
         try:
-            NetworkMessage.delete() \
-                .where(reduce(operator.and_, clauses)) \
-                .execute()
+            with NetworkMessage._meta.database.transaction():
+                NetworkMessage.delete() \
+                    .where(reduce(operator.and_, clauses)) \
+                    .execute()
         except (DataError, ProgrammingError, NotSupportedError,
                 TypeError, IntegrityError) as exc:
             # Unrecoverable error
@@ -166,7 +169,7 @@ class MessageHistoryService(IService):
             # Temporary error
             logger.warning("Task %s (%r) message removal queued",
                            task, properties)
-            self._remove_queue.put((task, properties))
+            self._remove_queue.appendleft((task, properties))
 
     @staticmethod
     def build_clauses(**properties) -> List[bool]:
@@ -203,20 +206,19 @@ class MessageHistoryService(IService):
 
         # Remove messages
         try:
-            task, parameters = self._remove_queue.get(False)
-        except queue.Empty:
+            task, parameters = self._remove_queue.pop()
+        except IndexError:
             pass
         else:
             self.remove_sync(task, **parameters)
 
         # Save messages
         try:
-            msg_dict = self._save_queue.get(True, self._queue_timeout)
-        except queue.Empty:
-            pass
+            msg_dict = self._save_queue.pop()
+        except IndexError:
+            time.sleep(self._queue_timeout)
         else:
             self.add_sync(msg_dict)
-
 
     def _sweep(self) -> None:
         """
@@ -226,9 +228,10 @@ class MessageHistoryService(IService):
         oldest = datetime.datetime.now() - self.MESSAGE_LIFETIME
 
         try:
-            NetworkMessage.delete() \
-                .where(NetworkMessage.msg_date <= oldest) \
-                .execute()
+            with NetworkMessage._meta.database.transaction():
+                NetworkMessage.delete() \
+                    .where(NetworkMessage.msg_date <= oldest) \
+                    .execute()
         except PeeweeException as exc:
             logger.error("Message sweep failed: %r", exc)
 

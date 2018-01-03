@@ -1,11 +1,11 @@
 import logging
-import queue
 import threading
 import time
 from enum import Enum
 from typing import Optional, Hashable, Type
 
 import requests
+from collections import deque
 from golem_messages import message
 
 from golem.core.variables import CONCENT_URL
@@ -128,7 +128,7 @@ class ConcentClientService(threading.Thread):
     MAX_GRACE_TIME = 5. * 60  # s
     GRACE_FACTOR = 2  # n times on each failure
 
-    QUEUE_TIMEOUT = 5  # s
+    QUEUE_TIMEOUT = 1.5  # s
 
     def __init__(self, enabled=True):
         super().__init__(daemon=True)
@@ -136,7 +136,7 @@ class ConcentClientService(threading.Thread):
         self._enabled = enabled  # FIXME: remove
         self._stop_event = threading.Event()
 
-        self._queue = queue.Queue()
+        self._queue = deque()
         self._client = ConcentClient()
         self._grace_time = self.MIN_GRACE_TIME
 
@@ -210,9 +210,9 @@ class ConcentClientService(threading.Thread):
         In case of failure, service enters a grace period.
         """
         try:
-            req = self._queue.get(True, self.QUEUE_TIMEOUT)
-        except queue.Empty:
-            return
+            req = self._queue.pop()
+        except IndexError:
+            return time.sleep(self.QUEUE_TIMEOUT)
 
         # FIXME: remove
         if not self._enabled:
@@ -249,4 +249,4 @@ class ConcentClientService(threading.Thread):
         req.status = ConcentRequestStatus.Queued
         self._delayed.pop(req.key, None)
         self._history[req.key] = req
-        self._queue.put(req)
+        self._queue.appendleft(req)
