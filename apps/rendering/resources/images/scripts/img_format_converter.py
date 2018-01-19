@@ -1,8 +1,7 @@
-import numpy as np
-from PIL import Image
-import OpenEXR
-
 import Imath
+import numpy as np
+import OpenEXR
+from PIL import Image
 
 
 # converting .exr file to .png if user gave .exr file as a rendered scene

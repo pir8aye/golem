@@ -2,6 +2,7 @@
 
 import os
 import sys
+# pylint: disable=import-error
 import params  # This module is generated before this script is run
 
 if __name__ == '__main__':
