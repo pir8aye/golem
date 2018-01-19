@@ -4,6 +4,7 @@ import math
 from apps.rendering.task.verifier import FrameRenderingVerifier
 from apps.blender.resources.cropgenerator import generate_crops
 from apps.blender.resources.imgcompare import check_size
+from apps.blender.resources.scenefileeditor import generate_blender_crop_file
 
 
 logger = logging.getLogger("apps.blender")
@@ -72,5 +73,17 @@ class BlenderVerifier(FrameRenderingVerifier):
                                      subtask_info['res_y']),
                                     subtask_info['crop_window'], num_crops,
                                     crop_size)
-        logger.info(crops_info)
+        for num in range(num_crops):
+            self._render_one_crop(crops_info[0][num], subtask_info, num)
         return True
+
+    def _render_one_crop(self, crop, subtask_info, num):
+        minx, maxx, miny, maxy = crop
+
+        script_src = generate_blender_crop_file(
+            resolution=(subtask_info['res_x'], subtask_info['res_y']),
+            borders_x=(minx, maxx),
+            borders_y=(miny, maxy),
+            use_compositing=False
+        )
+
