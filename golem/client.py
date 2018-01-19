@@ -956,16 +956,11 @@ class Client(HardwarePresetsMixin):
     def run_benchmark(self, env_id):
         deferred = Deferred()
 
-        def errback(err: Union[str, Exception]):
-            if isinstance(err, str):
-                err = Exception(err)
-            deferred.errback(err)
-
         if env_id != DefaultEnvironment.get_id():
             benchmark_manager = self.task_server.benchmark_manager
             benchmark_manager.run_benchmark_for_env_id(env_id,
                                                        deferred.callback,
-                                                       errback)
+                                                       deferred.errback)
             result = yield deferred
             returnValue(result)
         else:
